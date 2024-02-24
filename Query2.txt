@@ -1,0 +1,103 @@
+# Databricks notebook source
+# Query 2.1: calculate averages
+from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+
+table_names = ["agn_us_txt", "ainv_us_txt", "ale_us_txt"]
+
+for table in table_names:
+    df = spark.table(table)
+    df = df.withColumn("Month", F.month("Date"))
+
+    result21 = df.groupBy("Month").agg(
+        F.avg("Open").alias("Average Open"),
+        F.avg("Close").alias("Average Close"),
+        F.avg("Volume").alias("Average Volume")
+    ).orderBy("Month")
+
+    print(f"Results for {table}:")
+    result21.show()
+
+# COMMAND ----------
+
+# Query 2.2: calculate days with > 35$
+
+table_names = ["agn_us_txt", "ainv_us_txt", "ale_us_txt"]
+
+for table in table_names:
+    df = spark.table(table)
+    df_35 = df.filter(df["Open"]>35)
+
+    result22 = df_35.agg((F.count("Date").alias("Open > 35$")))
+    
+    print(f"Results for {table}:")
+    result22.show()
+    
+    
+
+# COMMAND ----------
+
+# Query 2.3: Days with highest Open and Volume
+
+table_names = ["agn_us_txt", "ainv_us_txt", "ale_us_txt"]
+
+for table in table_names:
+    df = spark.table(table)
+    
+    # find max values for the two columns
+    agg_df = df.agg(
+    F.max("Open").alias("maxopen"),
+    F.max("Volume").alias("maxvolume")
+    )
+    maxopen = agg_df.collect()[0]["maxopen"]
+    maxvolume = agg_df.collect()[0]["maxvolume"]
+
+    result_open = df.filter(F.col("Open") == maxopen).select("Date", "Open")
+    result_volume = df.filter(F.col("Volume") == maxvolume).select("Date", "Volume")
+
+    # Show the results
+    print(f"Results for {table}:")
+    print("Days with the highest opening price:")
+    result_open.show()
+
+    print("Days with the highest trading volume:")
+    result_volume.show()
+
+
+# COMMAND ----------
+
+# Query 2.4: YEARS with highest Open and lowest Close
+
+table_names = ["agn_us_txt", "ainv_us_txt", "ale_us_txt"]
+
+for table in table_names:
+    df = spark.table(table)
+
+    # Extract the year from the date
+    df = df.withColumn("Year", F.year("Date"))
+
+    # Year with the highest opening price
+    max_open_df = df.groupBy("Year").agg(F.max("Open").alias("max_open"))
+
+    # Year with the lowest closing price
+    min_close_df = df.groupBy("Year").agg(F.min("Close").alias("min_close"))
+
+    max_open_sorted_df = max_open_df.sort("max_open", ascending=False)
+    min_close_sorted_df = min_close_df.sort("min_close", ascending=True)
+
+    result_max_open = max_open_sorted_df.select("Year", "max_open").limit(1)
+    result_min_close = min_close_sorted_df.select("Year", "min_close").limit(1)
+
+    # Show the results
+    print(f"Results for {table}:")
+    print("Year with the highest opening price:")
+    result_max_open.show()
+
+    print("Year with the lowest closing price:")
+    result_min_close.show()
+
+
+# COMMAND ----------
+
+

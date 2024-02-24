@@ -1,0 +1,134 @@
+# Databricks notebook source
+from pyspark.sql.functions import col
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import when, lag, lead
+from pyspark.sql.functions import col, from_json
+from pyspark.sql.types import StructType, StructField, StringType, DoubleType, IntegerType, BooleanType
+import json
+from pyspark.sql.window import Window
+
+file_path = "dbfs:/FileStore/tour_occ_ninat-2.xlsx"
+
+# Read the data from the file
+data = spark.read.text(file_path).rdd.map(lambda row: row.value)
+df = spark.read \
+.format("com.crealytics.spark.excel") \
+.option("header", "true") \
+.option("inferSchema", "true")\
+.option("dataAddress", "'Sheet1'!A9:K45") \
+.load(file_path)
+
+df = df.replace(":", "0.0")
+df = df.na.fill(0.0)
+
+df.show()
+
+
+# COMMAND ----------
+
+from functools import reduce
+from operator import add
+from pyspark.sql.functions import col, when, regexp_replace
+from pyspark.sql.functions import col, lit, when, mean
+from pyspark.sql.types import DoubleType
+from pyspark.sql import functions as F
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, mean, expr
+from functools import reduce
+from operator import add
+from pyspark.sql.types import IntegerType
+
+for col_name in df.columns[1:]:
+    df = df.withColumn(col_name, col(col_name).cast("double"))
+
+df = df.withColumn("sum", sum([F.col(col_name) for col_name in df.columns[1:]]))
+
+# UDF to count values > 0.0 IN EACH ROW
+count_gt_zero_udf = F.udf(lambda row: sum(1 for value in row if value > 0.0) - 2, IntegerType()) # minus first column (geo/time) AND sum column
+
+# count of values > 0.0 IN EACH RW
+df = df.withColumn("count_gt_zero", count_gt_zero_udf(F.array([F.col(col_name) for col_name in df.columns[1:]])))
+
+df = df.withColumn("mean", F.when(F.col("count_gt_zero") > 0, F.col("sum") / F.col("count_gt_zero")).otherwise(None))
+
+# Drop sum and count>0, keeping mean for next query
+df = df.drop("sum", "count_gt_zero")
+
+for col_name in df.columns[1:]:
+    df = df.withColumn(col_name, F.when(F.col(col_name) == 0.0, F.col("mean")).otherwise(F.col(col_name)))
+
+result_mean = df.select("GEO/TIME","mean")
+df = df.drop("mean")
+
+# Show the DataFrame
+df.show()
+
+# COMMAND ----------
+
+# Query 3.1 mean: calculated from before
+
+result_mean.show()
+
+# COMMAND ----------
+
+# Query 3.2: Compare Greece to 5 other countries
+selected_countries = ["Italy", "Spain", "France", "Ireland", "Turkey"]
+
+filtered_df = df.filter(F.col("GEO/TIME").isin(selected_countries))
+compare_df = df.filter(F.col("GEO/TIME")=="Greece")
+
+schema = StructType([StructField(year, BooleanType(), False) for year in compare_df.columns[1:]])
+result32_df = spark.createDataFrame([], schema)
+result_rows = []
+for year in compare_df.columns[1:]:
+    max_value_for_year = filtered_df.agg(F.max(F.col(year))).first()[0]
+    result_rows.append(True if compare_df.select(year).first()[year] > max_value_for_year else False)
+
+# Append the new row to result32_df
+result32_df = spark.createDataFrame([tuple(result_rows)], schema=schema)
+result32_df.show()
+
+
+# COMMAND ----------
+
+# Query 3.3: Max overnights per year
+import pandas as pd
+
+pandasmax_df = df.toPandas()
+
+# Iterate over the columns (years) and find the country with the max value for each year
+max_countries = {}
+for column in pandasmax_df.columns[1:]:
+    max_countries[column] = pandasmax_df.loc[pandasmax_df[column].idxmax()]["GEO/TIME"]
+
+# Create a new DataFrame with the max countries for each year
+max_countries_df = pd.DataFrame.from_dict(max_countries, orient='index', columns=['Country'])
+
+# Transpose the DataFrame to have years as columns
+max_countries_df = max_countries_df.transpose()
+pysparkmax_df = spark.createDataFrame(max_countries_df)
+
+# Show the resulting DataFrame
+pysparkmax_df.show()
+
+# COMMAND ----------
+
+# Query 3.4: Min overnights per year
+min_values = df.agg(*(F.min(F.col(column)).alias(column) for column in df.columns[1:]))
+
+pandasmin_df = df.toPandas()
+
+# Iterate over the columns (years) and find the country with the max value for each year
+min_countries = {}
+for column in pandasmin_df.columns[1:]:
+    min_countries[column] = pandasmin_df.loc[pandasmin_df[column].idxmin()]["GEO/TIME"]
+
+# Create a new DataFrame with the max countries for each year
+min_countries_df = pd.DataFrame.from_dict(min_countries, orient='index', columns=['Country'])
+
+# Transpose the DataFrame to have years as columns
+min_countries_df = min_countries_df.transpose()
+
+pysparkmin_df = spark.createDataFrame(min_countries_df)
+# Show the resulting DataFrame
+pysparkmin_df.show()

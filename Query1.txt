@@ -1,0 +1,148 @@
+# Databricks notebook source
+from pyspark.sql.functions import col
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import when, lag, lead
+from pyspark.sql.functions import col, from_json
+from pyspark.sql.types import StructType, StructField, StringType, DoubleType
+import json
+from pyspark.sql.window import Window
+
+file_path = "dbfs:/FileStore/tempm.txt"
+
+data = spark.read.text(file_path).rdd.map(lambda row: row.value)
+schema = StructType([StructField("timestamp", StringType(), True),
+                    StructField("temperature", DoubleType(), True)])
+df = spark.createDataFrame([], schema)
+
+# Iterate through each line of data and append to the DataFrame
+for line in data.collect():
+    # Convert each JSON-like string to a Python dictionary
+    json_data = json.loads(line)
+    
+    # Convert the dictionary to a Spark DataFrame and append it to the main DataFrame
+    temp_df = spark.createDataFrame([(key, float(value) if value != "" else None) for key, value in json_data.items()], schema=schema)
+    df = df.union(temp_df)
+    
+windowSpec = Window().orderBy("timestamp")
+
+# Replace null values with the average of the previous and the next
+df = df.withColumn("temperature", 
+    when(col("temperature").isNotNull(), col("temperature"))
+    .otherwise((lag("temperature").over(windowSpec) + lead("temperature").over(windowSpec)) / 2)
+)
+
+df.show()
+
+
+# COMMAND ----------
+
+# Query 1.1 : Days where 18 <= temp <= 22 ALL DAY
+from pyspark.sql import functions as F
+df = df.withColumn("date", F.to_date("timestamp"))
+
+agg_df = df.groupBy("date").agg(
+    F.min("temperature").alias("min_temperature"),
+    F.max("temperature").alias("max_temperature")
+)
+result11_df = agg_df.filter( (col("min_temperature") >= 10 ) & (col("max_temperature") <= 16 )) 
+result11_df.show()
+
+# COMMAND ----------
+
+# Query 1.2 : 10 coldest and 10 hottest days
+from pyspark.sql import functions as F
+
+# Extract the date from the timestamp
+df = df.withColumn("date", F.to_date("timestamp"))
+
+# Group by date and calculate the average temperature for each day
+average_temperatures_by_day = df.groupBy("date").agg(F.avg("temperature").alias("average_temperature"))
+hottest_days = average_temperatures_by_day.sort("average_temperature", ascending=False).select('date').limit(10)
+coldest_days = average_temperatures_by_day.sort("average_temperature", ascending=True).select('date').limit(10)
+print("10 hottest days")
+hottest_days.show()
+print("10 coldest days")
+coldest_days.show()
+
+# COMMAND ----------
+
+# HUMIDITY
+
+from pyspark.sql.functions import col
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import when, lag, lead
+from pyspark.sql.functions import col, from_json, stddev
+from pyspark.sql.types import StructType, StructField, StringType, DoubleType
+import json
+from pyspark.sql.window import Window
+
+file_path = "dbfs:/FileStore/hum.txt"
+
+data = spark.read.text(file_path).rdd.map(lambda row: row.value)
+schema = StructType([StructField("timestamp", StringType(), True),
+                    StructField("humidity", DoubleType(), True)])
+df_h = spark.createDataFrame([], schema)
+
+
+# Iterate through each line of data and append to the DataFrame
+for line in data.collect():
+    # Convert each JSON-like string to a Python dictionary
+    json_data = json.loads(line)
+    
+    # Convert the dictionary to a Spark DataFrame and append it to the main DataFrame
+    temp_df = spark.createDataFrame([(key, float(value) if value != "" else None) for key, value in json_data.items()], schema=schema)
+    df_h = df_h.union(temp_df)
+    
+windowSpec = Window().orderBy("timestamp")
+
+# Replace null values with the average of the previous and next values
+df_h = df_h.withColumn("humidity", 
+    when(col("humidity").isNotNull(), col("humidity"))
+    .otherwise((lag("humidity").over(windowSpec) + lead("humidity").over(windowSpec)) / 2)
+)
+
+
+# COMMAND ----------
+
+# Query 1.3 : Standard Deviation
+from pyspark.sql.functions import month
+months_dictionary = {
+    1: 'January',
+    2: 'February',
+    3: 'March',
+    4: 'April',
+    5: 'May',
+    6: 'June',
+    7: 'July',
+    8: 'August',
+    9: 'September',
+    10: 'October',
+    11: 'November',
+    12: 'December'
+}
+df_h = df_h.withColumn("month", month("timestamp"))
+
+result_df = df_h.groupBy("month").agg(stddev('humidity').alias('stddev_humidity'))
+max_sd = result_df.orderBy("stddev_humidity", ascending=False).select("month").limit(1).collect()
+print(f"The month with the highest standard deviation in humidity values is {months_dictionary[max_sd[0]['month']]}")
+
+# COMMAND ----------
+
+# Query 1.4 : inner join the two dfs - min and max discomfort index
+# drop columns from previous queries
+df = df.drop("date")
+df_h = df_h.drop("month")
+
+# inner join
+result14_df = df.join(df_h, on="timestamp", how="inner")
+
+result14_df = result_df.withColumn(
+    "discomfort_index",
+    col("temperature") - 0.55 * (1 - 0.01 * col("humidity")) * (col("temperature") - 14.5)
+)
+
+max_discomfort_index = result14_df.agg(F.max("discomfort_index"))
+min_discomfort_index = result14_df.agg(F.min("discomfort_index"))
+max_discomfort_index.show()
+min_discomfort_index.show()
+
